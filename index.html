@@ -87,6 +87,8 @@
   .form-group textarea { height:90px; resize:none; }
   .btn-submit { width:100%; background:var(--blue); color:white; padding:14px; border:none; border-radius:8px; font-size:15px; font-weight:700; font-family:inherit; cursor:pointer; margin-top:0.5rem; }
   .btn-submit:hover { background:var(--blue-dark); }
+  .form-error { display:none; color:#b42318; font-size:14px; margin-top:0.75rem; text-align:center; }
+  .form-error a { color:inherit; font-weight:600; }
   .form-success { display:none; text-align:center; padding:2rem; }
 
   footer { background:#0a1628; color:rgba(255,255,255,0.6); padding:2rem 6vw; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; font-size:12px; }
@@ -223,22 +225,23 @@
       <div class="form-title" id="form-title">Env&iacute;ame un mensaje</div>
       <form id="contactForm">
         <div class="form-row">
-          <div class="form-group"><label id="lbl-name">Nombre</label><input type="text" placeholder="Tu nombre" required></div>
-          <div class="form-group"><label id="lbl-phone">Tel&eacute;fono</label><input type="tel" placeholder="407-000-0000"></div>
+          <div class="form-group"><label id="lbl-name">Nombre</label><input type="text" name="name" placeholder="Tu nombre" autocomplete="name" required></div>
+          <div class="form-group"><label id="lbl-phone">Tel&eacute;fono</label><input type="tel" name="phone" placeholder="407-000-0000" autocomplete="tel"></div>
         </div>
-        <div class="form-group"><label>Email</label><input type="email" placeholder="tu@email.com"></div>
+        <div class="form-group"><label>Email</label><input type="email" name="email" placeholder="tu@email.com" autocomplete="email" required></div>
         <div class="form-group">
           <label id="lbl-need">&#xBF;Qu&eacute; necesitas?</label>
-          <select>
-            <option id="opt-select">Selecciona...</option>
-            <option>Primera vivienda / First home</option>
-            <option>Inversi&oacute;n / Investment</option>
-            <option>Refinanciamiento / Refinance</option>
-            <option>Cr&eacute;dito / Credit consult</option>
+          <select name="loan_need">
+            <option id="opt-select" value="">Selecciona...</option>
+            <option value="first_home">Primera vivienda / First home</option>
+            <option value="investment">Inversi&oacute;n / Investment</option>
+            <option value="refinance">Refinanciamiento / Refinance</option>
+            <option value="credit">Cr&eacute;dito / Credit consult</option>
           </select>
         </div>
-        <div class="form-group"><label id="lbl-msg">Mensaje (opcional)</label><textarea placeholder="Cu&eacute;ntame un poco..."></textarea></div>
+        <div class="form-group"><label id="lbl-msg">Mensaje (opcional)</label><textarea name="message" placeholder="Cu&eacute;ntame un poco..."></textarea></div>
         <button type="submit" class="btn-submit" id="btn-submit">Enviar mensaje &rarr;</button>
+        <p class="form-error" id="formError" role="alert"></p>
       </form>
       <div class="form-success" id="formSuccess">
         <div style="font-size:3rem;margin-bottom:1rem;">&#x2705;</div>
@@ -295,7 +298,9 @@ var t = {
     formT:"Env&iacute;ame un mensaje", lblName:"Nombre", lblPhone:"Tel&eacute;fono",
     lblNeed:"&iquest;Qu&eacute; necesitas?", optSel:"Selecciona...", lblMsg:"Mensaje (opcional)",
     btnSub:"Enviar mensaje &rarr;",
-    successMsg:"<strong>&iexcl;Mensaje recibido!</strong><br>Te contactar&eacute; en las pr&oacute;ximas horas."
+    successMsg:"<strong>&iexcl;Mensaje recibido!</strong><br>Te contactar&eacute; en las pr&oacute;ximas horas.",
+    btnSending:"Enviando...",
+    errorMsg:"No se pudo enviar tu mensaje. Int&eacute;ntalo de nuevo o <a href=\"https://wa.me/18138506705\">escr&iacute;beme por WhatsApp</a>."
   },
   en: {
     cta:"Let's Talk", navS:"Services", navP:"Process", navC:"Contact",
@@ -326,12 +331,15 @@ var t = {
     formT:"Send me a message", lblName:"Name", lblPhone:"Phone",
     lblNeed:"What do you need?", optSel:"Select...", lblMsg:"Message (optional)",
     btnSub:"Send message &rarr;",
-    successMsg:"<strong>Message received!</strong><br>I'll get back to you within a few hours."
+    successMsg:"<strong>Message received!</strong><br>I'll get back to you within a few hours.",
+    btnSending:"Sending...",
+    errorMsg:"Your message couldn't be sent. Please try again or <a href=\"https://wa.me/18138506705\">message me on WhatsApp</a>."
   }
 };
 
 function setLang(lang) {
   var d = t[lang];
+  document.documentElement.lang = lang;
   document.querySelectorAll('.lang-btn').forEach(function(btn,i){ btn.classList.toggle('active',(i===0&&lang==='es')||(i===1&&lang==='en')); });
   document.getElementById('nav-cta').innerHTML = d.cta;
   document.getElementById('nav-servicios').innerHTML = d.navS;
@@ -374,10 +382,56 @@ function setLang(lang) {
   document.getElementById('success-msg').innerHTML=d.successMsg;
 }
 
+// Contact form -> HubSpot Forms API (portal "stf propiedades llc").
+// HUBSPOT_FORM_GUID comes from the form's URL in HubSpot (Marketing > Forms).
+var HUBSPOT_PORTAL_ID = '245587717';
+var HUBSPOT_FORM_GUID = '';
+var NEED_LABELS = { first_home:'Primera vivienda / First home', investment:'Inversion / Investment', refinance:'Refinanciamiento / Refinance', credit:'Credito / Credit consult' };
+
+function currentLang() { return document.documentElement.lang === 'en' ? 'en' : 'es'; }
+
 document.getElementById('contactForm').addEventListener('submit', function(e) {
   e.preventDefault();
-  this.style.display='none';
-  document.getElementById('formSuccess').style.display='block';
+  var form = this, btn = document.getElementById('btn-submit'), err = document.getElementById('formError');
+  if (form.dataset.sending) return;
+  var d = t[currentLang()];
+  var name = form.elements['name'].value.trim();
+  var parts = name.split(/\s+/);
+  var need = form.elements['loan_need'].value;
+  var msg = form.elements['message'].value.trim();
+  var body = (need ? 'Necesidad / Need: ' + NEED_LABELS[need] + '\n\n' : '') + msg;
+  var fields = [
+    { name:'firstname', value: parts.shift() || '' },
+    { name:'lastname', value: parts.join(' ') },
+    { name:'email', value: form.elements['email'].value.trim() },
+    { name:'phone', value: form.elements['phone'].value.trim() },
+    { name:'message', value: body }
+  ].filter(function(f){ return f.value; });
+
+  err.style.display = 'none';
+  form.dataset.sending = '1';
+  btn.disabled = true;
+  btn.innerHTML = d.btnSending;
+
+  function fail() {
+    delete form.dataset.sending;
+    btn.disabled = false;
+    btn.innerHTML = d.btnSub;
+    err.innerHTML = d.errorMsg;
+    err.style.display = 'block';
+  }
+  if (!HUBSPOT_FORM_GUID) { fail(); return; }
+
+  fetch('https://api.hsforms.com/submissions/v3/integration/submit/' + HUBSPOT_PORTAL_ID + '/' + HUBSPOT_FORM_GUID, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: fields, context: { pageUri: location.href, pageName: document.title } })
+  }).then(function(res) {
+    if (!res.ok) { fail(); return; }
+    form.style.display = 'none';
+    document.getElementById('formSuccess').style.display = 'block';
+    document.dispatchEvent(new CustomEvent('lead:submitted', { detail: { loan_need: need } }));
+  }).catch(fail);
 });
 </script>
 </body>
